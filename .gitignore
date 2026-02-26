@@ -1,0 +1,64 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# React Native
+*.jsbundle
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.expo/
+.expo-shared/
+web-build/
+expo-env.d.ts
+
+# iOS
+*.hmap
+*.xcworkspace
+*.xcworkspace/
+xcuserdata/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.xcuserstate
+project.xcworkspace/
+xcuserdata/
+*.xccheckout
+*.moved-aside
+DerivedData
+*.hmap
+*.ipa
+*.bundle
+
+# Android
+.gradle/
+local.properties
+*.iml
+*.hprof
+.idea/
+gradle-wrapper.jar
+android/app/build/
+android/build/
+android/.gradle/
+
+# WebRTC and Crypto
+*.pem
+*.key
+
+# Environments
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+*.swp
+
+# Testing
+coverage/
+
+# Misc
+.vscode/
+.idea/
