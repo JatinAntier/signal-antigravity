@@ -1,116 +1,178 @@
-import {generateKeyPair} from '../src/crypto/Curve25519';
-import {x3dhSender, x3dhReceiver} from '../src/crypto/signal/X3DH';
-import {initializeSender, initializeReceiver, ratchetEncrypt, ratchetDecrypt} from '../src/crypto/signal/DoubleRatchet';
+import {
+  PrivateKey,
+  PublicKey,
+  IdentityKeyPair,
+  SignedPreKeyRecord,
+  PreKeyRecord,
+  PreKeyBundle,
+  ProtocolAddress,
+  processPreKeyBundle,
+  signalEncrypt,
+  signalDecrypt,
+  signalDecryptPreKey,
+  CiphertextMessageType,
+  SessionStore,
+  IdentityKeyStore,
+  PreKeyStore,
+  SignedPreKeyStore,
+  IdentityChange,
+} from '@signalapp/libsignal-client';
 
-describe('Signal Protocol Integration', () => {
+// Simple in-memory stores for testing
+class MemSessionStore extends SessionStore {
+  constructor() {
+    super();
+    this.sessions = new Map();
+  }
+  async saveSession(name, record) {
+    this.sessions.set(`${name.name()}_${name.deviceId()}`, record.serialize());
+  }
+  async getSession(name) {
+    const data = this.sessions.get(`${name.name()}_${name.deviceId()}`);
+    return data ? require('@signalapp/libsignal-client').SessionRecord.deserialize(data) : null;
+  }
+  async getExistingSessions(addresses) { return []; }
+}
+
+class MemIdentityStore extends IdentityKeyStore {
+  constructor(identityKey, localId) {
+    super();
+    this.idKey = identityKey;
+    this.localId = localId;
+    this.identities = new Map();
+  }
+  async getIdentityKey() { return this.idKey.privateKey(); }
+  async getLocalRegistrationId() { return this.localId; }
+  async saveIdentity(name, key) {
+    this.identities.set(name.name(), key.serialize());
+    return IdentityChange.NewOrUnchanged;
+  }
+  async isTrustedIdentity(name, key, direction) { return true; }
+  async getIdentity(name) {
+    const data = this.identities.get(name.name());
+    return data ? PublicKey.deserialize(data) : null;
+  }
+}
+
+class MemPreKeyStore extends PreKeyStore {
+  constructor() { super(); this.keys = new Map(); }
+  async savePreKey(id, record) { this.keys.set(id, record.serialize()); }
+  async getPreKey(id) { 
+    const data = this.keys.get(id);
+    if (!data) throw new Error("not found");
+    return PreKeyRecord.deserialize(data);
+  }
+  async removePreKey(id) { this.keys.delete(id); }
+}
+
+class MemSignedPreKeyStore extends SignedPreKeyStore {
+  constructor() { super(); this.keys = new Map(); }
+  async saveSignedPreKey(id, record) { this.keys.set(id, record.serialize()); }
+  async getSignedPreKey(id) {
+    const data = this.keys.get(id);
+    if (!data) throw new Error("not found");
+    return SignedPreKeyRecord.deserialize(data);
+  }
+}
+
+describe('Signal Protocol Integration via @signalapp/libsignal-client', () => {
   it('Should successfully establish the X3DH shared session and execute Double Ratchet message exchanges', async () => {
     
     // --- STEP 1: KEY GENERATION ---
 
-    // Alice generates long-term and ephemeral keys
-    const aliceIK = generateKeyPair();
+    // Alice
+    const aliceId = IdentityKeyPair.generate();
+    const aliceSessionStore = new MemSessionStore();
+    const aliceIdentityStore = new MemIdentityStore(aliceId, 111);
 
-    // Bob generates long-term, pre-key, and one-time pre key
-    const bobIK = generateKeyPair();
-    const bobSPK = generateKeyPair();
-    const bobOPK = generateKeyPair();
+    // Bob
+    const bobId = IdentityKeyPair.generate();
+    const bobSessionStore = new MemSessionStore();
+    const bobIdentityStore = new MemIdentityStore(bobId, 222);
+    const bobPreKeyStore = new MemPreKeyStore();
+    const bobSignedStore = new MemSignedPreKeyStore();
 
-    // Bob publishes his public bundle to server
-    const bobBundle = {
-      userId: 100,
-      deviceId: 1,
-      identityKey: bobIK.publicKey,
-      signedPreKey: {
-        keyId: 1,
-        publicKey: bobSPK.publicKey,
-        // Mocking the signature since we are bypassing Ed25519 verification just to test the KDF/Ratchet flow.
-        // We will temporarily comment out `verify` in X3DH for the test, or mock tweetnacl.
-        signature: new Uint8Array(64).fill(1), 
-      },
-      oneTimePreKey: {
-        keyId: 10,
-        publicKey: bobOPK.publicKey,
-      }
-    };
+    // Bob generates Pre-Keys
+    const spkSecret = PrivateKey.generate();
+    const signature = bobId.privateKey().sign(spkSecret.getPublicKey().serialize());
+    const bobSPK = SignedPreKeyRecord.new(1, Date.now(), spkSecret.getPublicKey(), spkSecret, signature);
+    await bobSignedStore.saveSignedPreKey(1, bobSPK);
+
+    const opkSecret = PrivateKey.generate();
+    const bobOPK = PreKeyRecord.new(10, opkSecret.getPublicKey(), opkSecret);
+    await bobPreKeyStore.savePreKey(10, bobOPK);
 
     // --- STEP 2: ALICE INITIATES X3DH ---
+    // Alice builds a PreKeyBundle representing Bob's keys fetched from the server
+    const bundle = PreKeyBundle.new(
+      222, // registrationId
+      1, // deviceId
+      10, // prekeyId
+      bobOPK.publicKey(), // prekeyPublic
+      1, // signedPrekeyId
+      bobSPK.publicKey(), // signedPrekeyPublic
+      signature, // signedPrekeySignature
+      bobId.publicKey() // identityKey
+    );
 
-    // For integration test purposes, we mock `verify()` inside X3DH to safely pass 
-    // since we bypassed Ed25519 signing for simplicity in this setup block.
-    jest.spyOn(require('../src/crypto/Curve25519'), 'verify').mockReturnValue(true);
+    const bobAddress = ProtocolAddress.new('bob', 1);
 
-    const senderX3DH = await x3dhSender(aliceIK, bobBundle);
-    
-    // Alice initializes Double Ratchet Sender state
-    let aliceState = initializeSender(senderX3DH.masterSecret, bobBundle.signedPreKey.publicKey);
+    await processPreKeyBundle(bundle, bobAddress, aliceSessionStore, aliceIdentityStore);
 
     // --- STEP 3: ALICE ENCRYPTS FIRST MESSAGE ---
-    
-    // The very first message "Hello Bob!"
     const msg1Text = "Hello Bob! This is securely E2EE.";
-    const encoder = new TextEncoder();
-    
-    const encResult1 = ratchetEncrypt(aliceState, encoder.encode(msg1Text));
-    aliceState = encResult1.state;
+    const plainMessageBytes = Buffer.from(msg1Text, 'utf8');
+
+    const aliceCiphertextMsg = await signalEncrypt(
+      plainMessageBytes,
+      bobAddress,
+      aliceSessionStore,
+      aliceIdentityStore
+    );
+
+    expect(aliceCiphertextMsg.type()).toBe(CiphertextMessageType.PreKey);
 
     // --- STEP 4: BOB RECEIVES FIRST MESSAGE ---
+    const aliceAddress = ProtocolAddress.new('alice', 1);
 
-    // Bob runs X3DH using the header Alice sent
-    const receiverX3DH = await x3dhReceiver(
-      bobIK,
-      bobSPK,
-      bobOPK,
-      {
-        senderIdentityKey: aliceIK.publicKey,
-        ephemeralPublicKey: senderX3DH.initialMessage.ephemeralPublicKey,
-        signedPreKeyId: 1,
-        oneTimePreKeyId: 10,
-      }
+    // Bob processes the PreKey message
+    const preKeyMessage = require('@signalapp/libsignal-client').PreKeySignalMessage.deserialize(aliceCiphertextMsg.serialize());
+    
+    const bobPlaintextBytes = await signalDecryptPreKey(
+      preKeyMessage,
+      aliceAddress,
+      bobSessionStore,
+      bobIdentityStore,
+      bobPreKeyStore,
+      bobSignedStore,
+      null
     );
 
-    // Ensure Master Secrets strictly match
-    expect(receiverX3DH.masterSecret).toEqual(senderX3DH.masterSecret);
-
-    // Bob initializes Double Ratchet Receiver state
-    let bobState = initializeReceiver(receiverX3DH.masterSecret, bobSPK);
-
-    // Bob decrypts the first payload
-    const decResult1 = ratchetDecrypt(
-      bobState,
-      encResult1.header,
-      encResult1.ciphertext
-    );
-    bobState = decResult1.state;
-
-    const decoder = new TextDecoder();
-    expect(decoder.decode(decResult1.plaintext)).toEqual(msg1Text);
+    const decodedBob = Buffer.from(bobPlaintextBytes).toString('utf8');
+    expect(decodedBob).toBe(msg1Text);
 
     // --- STEP 5: BOB REPLIES ---
     const msg2Text = "Hey Alice, I got your encrypted message!";
-    const encResult2 = ratchetEncrypt(bobState, encoder.encode(msg2Text));
-    bobState = encResult2.state;
-
-    const decResult2 = ratchetDecrypt(
-      aliceState, 
-      encResult2.header, 
-      encResult2.ciphertext
+    const bobCiphertextMsg = await signalEncrypt(
+      Buffer.from(msg2Text, 'utf8'),
+      aliceAddress,
+      bobSessionStore,
+      bobIdentityStore
     );
-    aliceState = decResult2.state;
 
-    expect(decoder.decode(decResult2.plaintext)).toEqual(msg2Text);
+    expect(bobCiphertextMsg.type()).toBe(CiphertextMessageType.Whisper); // Normal Message
 
-    // --- STEP 6: ALICE REPLIES (Checking continuous session cycling) ---
-    const msg3Text = "Perfect, the Double Ratchet works.";
-    const encResult3 = ratchetEncrypt(aliceState, encoder.encode(msg3Text));
-    aliceState = encResult3.state;
-
-    const decResult3 = ratchetDecrypt(
-      bobState,
-      encResult3.header,
-      encResult3.ciphertext
+    // --- STEP 6: ALICE DECRYPTS REPLY ---
+    const signalMessage = require('@signalapp/libsignal-client').SignalMessage.deserialize(bobCiphertextMsg.serialize());
+    
+    const aliceDecryptedBytes = await signalDecrypt(
+      signalMessage,
+      bobAddress,
+      aliceSessionStore,
+      aliceIdentityStore
     );
-    bobState = decResult3.state;
 
-    expect(decoder.decode(decResult3.plaintext)).toEqual(msg3Text);
+    expect(Buffer.from(aliceDecryptedBytes).toString('utf8')).toBe(msg2Text);
+
   });
 });
