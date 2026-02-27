@@ -57,12 +57,12 @@ function* handleLogin(action) {
 
     // 3. Initialize Signal Protocol keys
     Logger.info('AuthSaga', 'Initializing Signal Protocol keys...');
-    const {isNewDevice} = yield call([KeyManager, 'initialize']);
+    const {isNewDevice, bundle} = yield call([KeyManager, 'initialize']);
 
     if (isNewDevice) {
       // 4a. New device: Upload initial key bundle to server
       Logger.info('AuthSaga', 'New device - uploading initial key bundle');
-      yield call([PreKeyManager, 'uploadInitialKeys']);
+      yield call([PreKeyManager, 'uploadInitialKeys'], bundle);
     } else {
       // 4b. Existing device: Check if keys need rotation/refill
       Logger.info('AuthSaga', 'Existing device - checking key rotation');

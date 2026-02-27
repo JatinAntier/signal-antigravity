@@ -71,9 +71,7 @@ class PreKeyManager {
   /**
    * Initial key upload after registration
    */
-  async uploadInitialKeys() {
-    const opkBatch = await KeyManager.generateOneTimePreKeys(BATCH_SIZE);
-    const bundle = await KeyManager.buildPublicKeyBundle(opkBatch);
+  async uploadInitialKeys(bundle) {
     await uploadKeys(bundle);
     Logger.info('PreKeyManager', 'Initial key bundle uploaded successfully');
   }

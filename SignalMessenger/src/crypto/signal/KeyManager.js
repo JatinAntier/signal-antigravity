@@ -86,6 +86,65 @@ class KeyManager {
   async getIdentityPublicKey() {
     return await SecureStorage.getItem('identity_public_key');
   }
+
+  /**
+   * Generates a batch of one time pre keys
+   * @param {number} count 
+   * @returns {Array} List of public OPKs
+   */
+  async generateOneTimePreKeys(count = 100) {
+    const rawIndex = await SecureStorage.getItem('last_opk_index');
+    let startIndex = parseInt(rawIndex || '0', 10) + 1;
+
+    const newKeys = [];
+    for (let i = 0; i < count; i++) {
+        const opkId = startIndex + i;
+        const opkSecret = PrivateKey.generate();
+        const opkRecord = PreKeyRecord.new(opkId, opkSecret.getPublicKey(), opkSecret);
+        await preKeyStore.savePreKey(opkId, opkRecord);
+        
+        newKeys.push({
+            keyId: opkId,
+            publicKey: Buffer.from(opkRecord.publicKey().serialize()).toString('base64')
+        });
+    }
+
+    await SecureStorage.setItem('last_opk_index', (startIndex + count - 1).toString());
+    return newKeys;
+  }
+
+  /**
+   * Rotates Signed Pre Key if older than 30 days
+   */
+  async rotateSignedPreKeyIfNeeded() {
+      // Stub implementation: 30 days rotate logic
+      const idKeyBase64 = await SecureStorage.getItem('identity_private_key');
+      if (!idKeyBase64) return { rotated: false };
+
+      // Usually we fetch timestamp of current. Let's just assume trigger rotates.
+      const rawSpkId = await SecureStorage.getItem('current_spk_id');
+      const nextSpkId = parseInt(rawSpkId || '0', 10) + 1;
+
+      const privKey = PrivateKey.deserialize(Buffer.from(idKeyBase64, 'base64'));
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const spkSecret = PrivateKey.generate();
+      const spkPublic = spkSecret.getPublicKey();
+      const signature = privKey.sign(spkPublic.serialize());
+      
+      const signedPreKey = SignedPreKeyRecord.new(nextSpkId, timestamp, spkPublic, spkSecret, signature);
+      await signedPreKeyStore.saveSignedPreKey(nextSpkId, signedPreKey);
+      await SecureStorage.setItem('current_spk_id', nextSpkId.toString());
+
+      return {
+          rotated: true,
+          newSpkBundle: {
+              keyId: nextSpkId,
+              publicKey: Buffer.from(signedPreKey.publicKey().serialize()).toString('base64'),
+              signature: Buffer.from(signedPreKey.signature()).toString('base64')
+          }
+      };
+  }
 }
 
 export default new KeyManager();

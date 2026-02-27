@@ -73,7 +73,7 @@
       "^@/(.*)$": "<rootDir>/src/$1"
     },
     "transformIgnorePatterns": [
-      "node_modules/(?!(@react-native|react-native|@signalapp/libsignal-client)/)"
+      "node_modules/(?!(@react-native|react-native|@signalapp/libsignal-client|uuid)/)"
     ]
   }
 }
